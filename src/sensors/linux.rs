@@ -1,29 +1,29 @@
+use super::GpuInfo;
+use crate::graph_data::MetricType;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
-use sysinfo::{Components, Disks, MemoryRefreshKind, Networks, System};
+use sysinfo::Components;
+
+/// Every metric has a sensor on Linux, hardware permitting.
+pub const UNSUPPORTED_METRICS: &[MetricType] = &[];
 
 static PREV_CPU_STATS: Mutex<Option<(u64, u64)>> = Mutex::new(None);
-static PREV_DISK_WRITE: Mutex<Option<u64>> = Mutex::new(None);
-static PREV_DISK_READ: Mutex<Option<u64>> = Mutex::new(None);
-static PREV_NET_RX: Mutex<Option<u64>> = Mutex::new(None);
-static PREV_NET_TX: Mutex<Option<u64>> = Mutex::new(None);
 static NVML: OnceLock<Option<nvml_wrapper::Nvml>> = OnceLock::new();
-static SYSINFO: Mutex<Option<System>> = Mutex::new(None);
+
+pub(super) fn counts_disk(_mount_point: &Path) -> bool {
+    true
+}
+
+pub(super) fn counts_interface(name: &str) -> bool {
+    name != "lo"
+}
 
 /// Get the shared NVML instance, initializing it once on first use.
 fn nvml() -> Option<&'static nvml_wrapper::Nvml> {
     NVML.get_or_init(|| nvml_wrapper::Nvml::init().ok())
         .as_ref()
-}
-
-/// Get RAM info (used, total) using a shared System instance.
-fn ram_info() -> (u64, u64) {
-    let mut guard = SYSINFO.lock().unwrap();
-    let sys = guard.get_or_insert_with(System::new);
-    sys.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
-    (sys.used_memory(), sys.total_memory())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,13 +57,6 @@ fn detect_gpu_vendor_for_card(card: &str) -> GpuVendor {
     }
 
     GpuVendor::Unknown
-}
-
-/// Represents a detected GPU with its card name and display name
-#[derive(Debug, Clone)]
-pub struct GpuInfo {
-    pub card: String,
-    pub name: String,
 }
 
 /// Enumerate all available GPUs from /sys/class/drm
@@ -202,28 +195,6 @@ pub async fn find_cpu_load() -> Result<f32> {
     Ok(0.0)
 }
 
-/// Find RAM usage percentage
-pub async fn find_ram_usage() -> Result<f32> {
-    let (used, total) = ram_info();
-    if total > 0 {
-        Ok((used as f32 / total as f32) * 100.0)
-    } else {
-        Ok(0.0)
-    }
-}
-
-/// Find RAM usage in gigabytes
-pub async fn find_ram_usage_gb() -> Result<f32> {
-    let (used, _) = ram_info();
-    Ok(used as f32 / 1_073_741_824.0)
-}
-
-/// Find total RAM in gigabytes
-pub async fn find_ram_total_gb() -> Result<f32> {
-    let (_, total) = ram_info();
-    Ok(total as f32 / 1_073_741_824.0)
-}
-
 /// Find RAM temperature from sysinfo
 pub async fn find_ram_temperature() -> Result<f32> {
     let components = Components::new_with_refreshed_list();
@@ -240,98 +211,6 @@ pub async fn find_ram_temperature() -> Result<f32> {
 
     log::warn!("RAM temperature sensor not found");
     Ok(0.0)
-}
-
-/// Find disk write speed in MB/s
-pub async fn find_disk_write() -> Result<f32> {
-    let mut disks = Disks::new_with_refreshed_list();
-    disks.refresh(true);
-
-    let mut total_written = 0u64;
-    for disk in disks.list() {
-        total_written += disk.usage().total_written_bytes;
-    }
-
-    let mut prev = PREV_DISK_WRITE.lock().unwrap();
-    let write_speed = if let Some(prev_written) = *prev {
-        let delta = total_written.saturating_sub(prev_written);
-        (delta as f32) / 1_048_576.0 // Convert to MB/s
-    } else {
-        0.0
-    };
-
-    *prev = Some(total_written);
-    Ok(write_speed)
-}
-
-/// Find disk read speed in MB/s
-pub async fn find_disk_read() -> Result<f32> {
-    let mut disks = Disks::new_with_refreshed_list();
-    disks.refresh(true);
-
-    let mut total_read = 0u64;
-    for disk in disks.list() {
-        total_read += disk.usage().total_read_bytes;
-    }
-
-    let mut prev = PREV_DISK_READ.lock().unwrap();
-    let read_speed = if let Some(prev_read) = *prev {
-        let delta = total_read.saturating_sub(prev_read);
-        (delta as f32) / 1_048_576.0 // Convert to MB/s
-    } else {
-        0.0
-    };
-
-    *prev = Some(total_read);
-    Ok(read_speed)
-}
-
-/// Find network download speed in MB/s
-pub async fn find_net_download() -> Result<f32> {
-    let networks = Networks::new_with_refreshed_list();
-
-    let mut total_rx = 0u64;
-    for (interface_name, network) in &networks {
-        if interface_name == "lo" {
-            continue;
-        }
-        total_rx += network.total_received();
-    }
-
-    let mut prev = PREV_NET_RX.lock().unwrap();
-    let download_speed = if let Some(prev_rx) = *prev {
-        let delta = total_rx.saturating_sub(prev_rx);
-        (delta as f32) / 1_048_576.0 // Convert to MB/s
-    } else {
-        0.0
-    };
-
-    *prev = Some(total_rx);
-    Ok(download_speed)
-}
-
-/// Find network upload speed in MB/s
-pub async fn find_net_upload() -> Result<f32> {
-    let networks = Networks::new_with_refreshed_list();
-
-    let mut total_tx = 0u64;
-    for (interface_name, network) in &networks {
-        if interface_name == "lo" {
-            continue;
-        }
-        total_tx += network.total_transmitted();
-    }
-
-    let mut prev = PREV_NET_TX.lock().unwrap();
-    let upload_speed = if let Some(prev_tx) = *prev {
-        let delta = total_tx.saturating_sub(prev_tx);
-        (delta as f32) / 1_048_576.0 // Convert to MB/s
-    } else {
-        0.0
-    };
-
-    *prev = Some(total_tx);
-    Ok(upload_speed)
 }
 
 /// Read a hwmon sysfs value as f32, dividing by 1000 (millidegrees → degrees, millivolts → volts)
