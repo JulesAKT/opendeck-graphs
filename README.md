@@ -4,6 +4,10 @@ A configurable OpenDeck plugin that displays real-time hardware sensor data as i
 
 ![Hardware Graphs Plugin](img/readme.png)
 
+## Disclaimer
+
+This is a fork of the original opendeck-graphs, available [here](https://github.com/mdvictor/opendeck-graphs). It exists purely to add MacOS support. Currently, said support is limited to Apple Silicon based Macs.
+
 ## Features
 
 - Monitor CPU, GPU, RAM, and other hardware sensors
