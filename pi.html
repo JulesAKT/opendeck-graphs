@@ -90,14 +90,33 @@
                             gpuCard.value = savedGpuCard;
                         }
                         renderInitMessages(s.websocket_init_messages || []);
+                        ensureMetricSelected();
                         refreshDynamicSections();
                     } else if (data.event == "sendToPropertyInspector") {
                         const payload = data.payload || {};
                         if (payload.event === "gpuList") {
                             populateGpuList(payload.gpus || [], savedGpuCard);
+                            removeUnsupportedMetrics(payload.unsupported_metrics || []);
                         }
                     }
                 };
+
+                function removeUnsupportedMetrics(unsupported) {
+                    Array.from(metricType.options)
+                        .filter((opt) => unsupported.includes(opt.value))
+                        .forEach((opt) => opt.remove());
+                    ensureMetricSelected();
+                    refreshDynamicSections();
+                }
+
+                // A key configured on another platform can hold a metric that
+                // isn't offered here; move it to one that is, and save that.
+                function ensureMetricSelected() {
+                    if (metricType.selectedIndex < 0) {
+                        metricType.selectedIndex = 0;
+                        update();
+                    }
+                }
 
                 function applySettings(s) {
                     dataSource.value = s.data_source || "local";

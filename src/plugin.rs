@@ -133,6 +133,7 @@ impl Action for GraphAction {
             .send_to_property_inspector(serde_json::json!({
                 "event": "gpuList",
                 "gpus": gpu_list,
+                "unsupported_metrics": sensors::UNSUPPORTED_METRICS,
             }))
             .await;
         Ok(())

@@ -20,4 +20,9 @@ imageproc = "0.25"
 ab_glyph = "0.2"
 futures-util = "0.3"
 sysinfo = "0.33"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 nvml-wrapper = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"

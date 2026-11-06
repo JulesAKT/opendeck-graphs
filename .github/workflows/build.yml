@@ -26,6 +26,10 @@ jobs:
             os: ubuntu-22.04-arm
             build-ext: ""
             artifact-ext: -aarch64-unknown-linux-gnu
+          - target: aarch64-apple-darwin
+            os: macos-14
+            build-ext: ""
+            artifact-ext: -aarch64-apple-darwin
 
     steps:
       - name: Checkout
@@ -91,6 +95,7 @@ jobs:
           # Copy binaries from artifacts
           cp binaries/oa-graphs-x86_64-unknown-linux-gnu/oa-graphs-x86_64-unknown-linux-gnu "$PLUGIN_DIR/"
           cp binaries/oa-graphs-aarch64-unknown-linux-gnu/oa-graphs-aarch64-unknown-linux-gnu "$PLUGIN_DIR/"
+          cp binaries/oa-graphs-aarch64-apple-darwin/oa-graphs-aarch64-apple-darwin "$PLUGIN_DIR/"
           chmod +x "$PLUGIN_DIR"/oa-graphs-*
 
           # Copy required files

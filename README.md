@@ -4,6 +4,10 @@ A configurable OpenDeck plugin that displays real-time hardware sensor data as i
 
 ![Hardware Graphs Plugin](img/readme.png)
 
+## Disclaimer
+
+This is a fork of the original opendeck-graphs, available [here](https://github.com/mdvictor/opendeck-graphs). It exists purely to add MacOS support. Currently, said support is limited to Apple Silicon based Macs.
+
 ## Features
 
 - Monitor CPU, GPU, RAM, and other hardware sensors
@@ -17,6 +21,16 @@ Install via OpenDeck plugin manager or manually place in your plugins directory.
 ## Usage
 
 Add the Hardware Graph action to any key and configure which sensor to monitor through the property inspector.
+
+## Platform support
+
+Runs on Linux (x86_64, aarch64) and on macOS with Apple Silicon.
+
+On macOS, the property inspector only offers metrics that have a sensor. GPU temperature, GPU power, motherboard temperature, fan speed, CPU voltage and RAM temperature aren't available. Some metrics also read differently:
+
+- **CPU temperature** is the hottest SoC die sensor, because Apple doesn't document which sensors cover the CPU cores.
+- **GPU memory** is shown against total system RAM, because Apple Silicon has no dedicated VRAM.
+- **Network speed** only counts `en*` interfaces, so VPN traffic isn't counted twice.
 
 ## Experimental
 

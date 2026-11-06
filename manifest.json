@@ -4,12 +4,18 @@
   "Version": "2.2.0",
   "CodePaths": {
     "x86_64-unknown-linux-gnu": "oa-graphs-x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu": "oa-graphs-aarch64-unknown-linux-gnu"
+    "aarch64-unknown-linux-gnu": "oa-graphs-aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin": "oa-graphs-aarch64-apple-darwin"
   },
   "CodePathLin": "oa-graphs-x86_64-unknown-linux-gnu",
+  "CodePathMac": "oa-graphs-aarch64-apple-darwin",
   "OS": [
     {
       "Platform": "linux"
+    },
+    {
+      "Platform": "mac",
+      "MinimumVersion": "11.0"
     }
   ],
   "Category": "Graphs",
