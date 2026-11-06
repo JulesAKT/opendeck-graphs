@@ -1,15 +1,15 @@
-use super::GpuInfo;
+use super::{GpuInfo, SharedReading};
 use crate::graph_data::MetricType;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use sysinfo::Components;
 
 /// Every metric has a sensor on Linux, hardware permitting.
 pub const UNSUPPORTED_METRICS: &[MetricType] = &[];
 
-static PREV_CPU_STATS: Mutex<Option<(u64, u64)>> = Mutex::new(None);
+static CPU_LOAD: SharedReading<(u64, u64)> = SharedReading::new();
 static NVML: OnceLock<Option<nvml_wrapper::Nvml>> = OnceLock::new();
 
 pub(super) fn counts_disk(_mount_point: &Path) -> bool {
@@ -172,21 +172,18 @@ pub async fn find_cpu_load() -> Result<f32> {
                 let active = user + nice + system + irq + softirq;
 
                 // Calculate CPU usage based on delta from previous reading
-                let mut prev_stats = PREV_CPU_STATS.lock().unwrap();
-                let cpu_usage = if let Some((prev_total, prev_active)) = *prev_stats {
-                    let total_delta = total.saturating_sub(prev_total);
-                    let active_delta = active.saturating_sub(prev_active);
-                    if total_delta > 0 {
-                        (active_delta as f32 / total_delta as f32) * 100.0
-                    } else {
-                        0.0
-                    }
-                } else {
-                    // First reading, return 0
-                    0.0
-                };
-
-                *prev_stats = Some((total, active));
+                let cpu_usage = CPU_LOAD.get(
+                    || (total, active),
+                    |(prev_total, prev_active), _, _| {
+                        let total_delta = total.saturating_sub(*prev_total);
+                        let active_delta = active.saturating_sub(*prev_active);
+                        if total_delta > 0 {
+                            (active_delta as f32 / total_delta as f32) * 100.0
+                        } else {
+                            0.0
+                        }
+                    },
+                );
                 return Ok(cpu_usage);
             }
         }

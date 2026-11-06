@@ -3,7 +3,8 @@
 
 use anyhow::Result;
 use std::sync::Mutex;
-use sysinfo::{Disks, MemoryRefreshKind, Networks, System};
+use std::time::{Duration, Instant};
+use sysinfo::{DiskUsage, Disks, MemoryRefreshKind, NetworkData, Networks, System};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -16,11 +17,76 @@ use macos as platform;
 
 pub use platform::*;
 
-static PREV_DISK_WRITE: Mutex<Option<u64>> = Mutex::new(None);
-static PREV_DISK_READ: Mutex<Option<u64>> = Mutex::new(None);
-static PREV_NET_RX: Mutex<Option<u64>> = Mutex::new(None);
-static PREV_NET_TX: Mutex<Option<u64>> = Mutex::new(None);
+/// Keys are updated one after another each tick, so readings closer together
+/// than this belong to the same tick and are shared.
+const MIN_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
+
+static DISK_WRITE: SharedReading<u64> = SharedReading::new();
+static DISK_READ: SharedReading<u64> = SharedReading::new();
+static NET_RX: SharedReading<u64> = SharedReading::new();
+static NET_TX: SharedReading<u64> = SharedReading::new();
 static SYSINFO: Mutex<Option<System>> = Mutex::new(None);
+
+/// The latest value of a metric calculated from the change in a counter.
+///
+/// The counters are process-wide, so if each key compared against the previous
+/// read, keys showing the same metric would split the change between them.
+/// Instead, one key's read per tick updates the value and the rest reuse it.
+struct SharedReading<C> {
+    latest: Mutex<Option<Reading<C>>>,
+}
+
+struct Reading<C> {
+    taken: Instant,
+    counters: C,
+    value: f32,
+}
+
+impl<C> SharedReading<C> {
+    const fn new() -> Self {
+        Self {
+            latest: Mutex::new(None),
+        }
+    }
+
+    /// Return the current value, calling `read` for new counters and then
+    /// `calculate(previous, current, elapsed_secs)` if the value is out of date.
+    /// The first reading has nothing to compare against, so its value is 0.
+    fn get(
+        &self,
+        read: impl FnOnce() -> C,
+        calculate: impl FnOnce(&C, &C, f32) -> f32,
+    ) -> f32 {
+        let mut latest = self.latest.lock().unwrap();
+        if let Some(reading) = latest.as_ref() {
+            if reading.taken.elapsed() < MIN_SAMPLE_INTERVAL {
+                return reading.value;
+            }
+        }
+
+        let counters = read();
+        let taken = Instant::now();
+        let value = latest.as_ref().map_or(0.0, |previous| {
+            let elapsed = taken.duration_since(previous.taken).as_secs_f32();
+            calculate(&previous.counters, &counters, elapsed)
+        });
+        *latest = Some(Reading {
+            taken,
+            counters,
+            value,
+        });
+        value
+    }
+}
+
+impl SharedReading<u64> {
+    /// Return the rate of change of a byte counter in MB/s.
+    fn rate(&self, read: impl FnOnce() -> u64) -> f32 {
+        self.get(read, |previous, current, elapsed| {
+            current.saturating_sub(*previous) as f32 / 1_048_576.0 / elapsed
+        })
+    }
+}
 
 /// Represents a detected GPU with its card name and display name
 #[derive(Debug, Clone)]
@@ -61,94 +127,77 @@ pub async fn find_ram_total_gb() -> Result<f32> {
 
 /// Find disk write speed in MB/s
 pub async fn find_disk_write() -> Result<f32> {
-    let mut disks = Disks::new_with_refreshed_list();
-    disks.refresh(true);
-
-    let mut total_written = 0u64;
-    for disk in disks.list() {
-        if platform::counts_disk(disk.mount_point()) {
-            total_written += disk.usage().total_written_bytes;
-        }
-    }
-
-    let mut prev = PREV_DISK_WRITE.lock().unwrap();
-    let write_speed = if let Some(prev_written) = *prev {
-        let delta = total_written.saturating_sub(prev_written);
-        (delta as f32) / 1_048_576.0 // Convert to MB/s
-    } else {
-        0.0
-    };
-
-    *prev = Some(total_written);
-    Ok(write_speed)
+    Ok(DISK_WRITE.rate(|| disk_total(|usage| usage.total_written_bytes)))
 }
 
 /// Find disk read speed in MB/s
 pub async fn find_disk_read() -> Result<f32> {
+    Ok(DISK_READ.rate(|| disk_total(|usage| usage.total_read_bytes)))
+}
+
+fn disk_total(bytes: impl Fn(&DiskUsage) -> u64) -> u64 {
     let mut disks = Disks::new_with_refreshed_list();
     disks.refresh(true);
-
-    let mut total_read = 0u64;
-    for disk in disks.list() {
-        if platform::counts_disk(disk.mount_point()) {
-            total_read += disk.usage().total_read_bytes;
-        }
-    }
-
-    let mut prev = PREV_DISK_READ.lock().unwrap();
-    let read_speed = if let Some(prev_read) = *prev {
-        let delta = total_read.saturating_sub(prev_read);
-        (delta as f32) / 1_048_576.0 // Convert to MB/s
-    } else {
-        0.0
-    };
-
-    *prev = Some(total_read);
-    Ok(read_speed)
+    disks
+        .list()
+        .iter()
+        .filter(|disk| platform::counts_disk(disk.mount_point()))
+        .map(|disk| bytes(&disk.usage()))
+        .sum()
 }
 
 /// Find network download speed in MB/s
 pub async fn find_net_download() -> Result<f32> {
-    let networks = Networks::new_with_refreshed_list();
-
-    let mut total_rx = 0u64;
-    for (interface_name, network) in &networks {
-        if platform::counts_interface(interface_name) {
-            total_rx += network.total_received();
-        }
-    }
-
-    let mut prev = PREV_NET_RX.lock().unwrap();
-    let download_speed = if let Some(prev_rx) = *prev {
-        let delta = total_rx.saturating_sub(prev_rx);
-        (delta as f32) / 1_048_576.0 // Convert to MB/s
-    } else {
-        0.0
-    };
-
-    *prev = Some(total_rx);
-    Ok(download_speed)
+    Ok(NET_RX.rate(|| network_total(NetworkData::total_received)))
 }
 
 /// Find network upload speed in MB/s
 pub async fn find_net_upload() -> Result<f32> {
-    let networks = Networks::new_with_refreshed_list();
+    Ok(NET_TX.rate(|| network_total(NetworkData::total_transmitted)))
+}
 
-    let mut total_tx = 0u64;
-    for (interface_name, network) in &networks {
-        if platform::counts_interface(interface_name) {
-            total_tx += network.total_transmitted();
-        }
+fn network_total(bytes: impl Fn(&NetworkData) -> u64) -> u64 {
+    let networks = Networks::new_with_refreshed_list();
+    networks
+        .iter()
+        .filter(|(name, _)| platform::counts_interface(name))
+        .map(|(_, network)| bytes(network))
+        .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::thread::sleep;
+
+    #[test]
+    fn keys_in_the_same_tick_share_one_reading() {
+        let sampler = SharedReading::new();
+        let reads = Cell::new(0u64);
+        let read = || {
+            reads.set(reads.get() + 1);
+            reads.get() * 10_485_760 // 10 MiB more on each read
+        };
+
+        assert_eq!(sampler.rate(read), 0.0, "first reading has no baseline");
+        assert_eq!(sampler.rate(read), 0.0, "still the same tick");
+        assert_eq!(reads.get(), 1);
+
+        sleep(MIN_SAMPLE_INTERVAL + Duration::from_millis(50));
+        let first_key = sampler.rate(read);
+        let second_key = sampler.rate(read);
+        assert_eq!(reads.get(), 2);
+        assert_eq!(first_key, second_key);
     }
 
-    let mut prev = PREV_NET_TX.lock().unwrap();
-    let upload_speed = if let Some(prev_tx) = *prev {
-        let delta = total_tx.saturating_sub(prev_tx);
-        (delta as f32) / 1_048_576.0 // Convert to MB/s
-    } else {
-        0.0
-    };
-
-    *prev = Some(total_tx);
-    Ok(upload_speed)
+    #[test]
+    fn rate_is_measured_over_the_real_elapsed_time() {
+        let sampler = SharedReading::new();
+        sampler.rate(|| 0);
+        sleep(MIN_SAMPLE_INTERVAL * 2);
+        // 10 MiB over one second or so, not over an assumed one-second tick.
+        let rate = sampler.rate(|| 10_485_760);
+        assert!(rate > 5.0 && rate <= 10.0, "rate was {rate}");
+    }
 }

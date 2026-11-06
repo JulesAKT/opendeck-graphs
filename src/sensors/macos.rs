@@ -3,7 +3,7 @@
 //! Temperatures come from `sysinfo`, and GPU stats from the `IOAccelerator`
 //! entry in the IORegistry. None of this needs root.
 
-use super::{ram_info, GpuInfo, SYSINFO};
+use super::{ram_info, GpuInfo, SharedReading, SYSINFO};
 use crate::graph_data::MetricType;
 use anyhow::Result;
 use core_foundation::base::{kCFAllocatorDefault, CFType, CFTypeRef, TCFType};
@@ -29,6 +29,7 @@ pub const UNSUPPORTED_METRICS: &[MetricType] = &[
 const GPU_CARD: &str = "gpu0";
 const BYTES_PER_GB: f32 = 1_073_741_824.0;
 
+static CPU_LOAD: SharedReading<f32> = SharedReading::new();
 static COMPONENTS: Mutex<Option<Components>> = Mutex::new(None);
 
 #[allow(non_camel_case_types)]
@@ -178,11 +179,22 @@ pub async fn find_gpu_vram_total_gb(_card: &str) -> Result<f32> {
 }
 
 pub async fn find_cpu_load() -> Result<f32> {
-    let mut guard = SYSINFO.lock().unwrap();
-    let sys = guard.get_or_insert_with(System::new);
-    sys.refresh_cpu_usage();
-    let load = sys.global_cpu_usage();
-    Ok(if load.is_finite() { load } else { 0.0 })
+    // sysinfo tracks the change since its last refresh, so there's nothing to
+    // calculate here: the shared reading just limits refreshes to one per tick.
+    Ok(CPU_LOAD.get(
+        || {
+            let mut guard = SYSINFO.lock().unwrap();
+            let sys = guard.get_or_insert_with(System::new);
+            sys.refresh_cpu_usage();
+            let load = sys.global_cpu_usage();
+            if load.is_finite() {
+                load
+            } else {
+                0.0
+            }
+        },
+        |_, current, _| *current,
+    ))
 }
 
 /// Refresh the temperature sensors and return every (label, temperature) reading.
